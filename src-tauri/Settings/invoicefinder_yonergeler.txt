@@ -1,0 +1,25 @@
+Invoice Finder Programı Yönergeleri:
+
+1. Ekranınızda gözükmekte olan ilk boşluğa orada da belirtildiği üzere uygulamanın bulmuş olduğu invoice dosyalarının ve en son uygulamanın oluşturacağı excel dosyasının kaydedileceği dosya yolunu gerek elinizle yazarak gerek Browse butonunu kullanarak uygulamaya belirtiniz.
+
+2. İkinci boşluğa ise bilgisayarınızda bulunan bütün invoice pdf dosyalarını içeren klasörün yolunu 1. yönergede belirtildiği şekilde giriniz.
+
+3. Üçüncü boşluğa ise içeriğinde bütün Upc değerleri ve o değerlere karşılık gelen invoice numaralarını içeren ALL INVOICES excelini önceki maddelerde belirtildiği şekilde giriniz.
+
+4. Dördüncü boşluğa ise uygulamanın hangi tarihten önceki invoiceleri tarayacağını giriniz.
+
+5. İlk 3 Dosya yolunu "Kaydet" butonu arayıcılığıyla daha sonraki işlemlerinizde de kullanmak amacıyla kaydedebilirsiniz.
+
+6. Bütün bu dosya yolu girme yerlerinin altında bir adet sürükle ve bırak yöntemi ile dosya algılayan alan göreceksiniz. O alana Amazonun sitesinden kopyalayarak aldığınız verileri bir excele metin olarak yapıştırıp oluşturduğunuz excel dosyasını belirtilen alana fare imlecinizle tutup bırakınız.
+
+7. İşlemi başlatmak için "Başlat" butonunuza basmanız yeterlidir.
+
+-------------SÜTUN İSİMLERİ---------------
+
+ALL INVOICES EXCEL DOSYASI İÇİN:
+
+ship quantity = ShipQuantity
+item number = ShipItem
+UPC = Upc
+Invoice Number = InvoiceNumber
+Date = Date

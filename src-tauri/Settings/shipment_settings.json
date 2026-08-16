@@ -1,0 +1,5 @@
+{
+    "restock_columns": { "upc": ["Upc"], "pcs": ["PCS", "Pcs", "pcs"], "asin": ["ASIN"], "pk": ["PK"], "price": ["Price"], "suplier": ["suplier"] },
+    "orderform_columns": { "upc": ["UPC"], "pcs": ["PCS"], "asin": ["ASIN 1", "ASIN 2", "ASIN 3", "ASIN 4"], "sku": ["ASIN1_SKU", "ASIN2_SKU", "ASIN3_SKU", "ASIN4_SKU"], "pk": ["PK"], "price": ["price"], "suplier": ["suplier"] },
+    "invoice_columns": { "shipquantity": ["ShipQuantity"], "upc": ["Upc"], "price": ["NetEach2"], "packsize": ["PackSize"], "brand": ["Brand"], "description": ["Description"] }
+}

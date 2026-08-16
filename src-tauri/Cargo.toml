@@ -1,0 +1,36 @@
+[package]
+name = "operations-toolkit"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "operations_toolkit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+tauri-plugin-dialog = "2"
+csv = "1.4.0"
+rfd = "0.17.2"
+keyring = "4.1.6"
+tokio = { version = "1.53.1", features = ["sync"] }
+rust_xlsxwriter = "0.98.0"
+chrono = "0.4.45"
+calamine = "0.36.1"
+rayon = "1.12.0"
+rustc-hash = "2.1.3"
+tauri-plugin-updater = "2.10.1"
+

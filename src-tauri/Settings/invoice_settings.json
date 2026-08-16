@@ -1,0 +1,3 @@
+{
+    "columns": { "remove": ["Status", "QuantityNotShipped", "InvalidReason"], "shipquantity": ["ShipQuantity"], "date": ["InvoiceDate"] }
+}

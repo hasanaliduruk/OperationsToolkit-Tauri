@@ -1,0 +1,19 @@
+{
+  "version": "v1.2.9",
+  "notes": "Performans optimizasyonları ve Rayon multi-threading entegrasyonu tamamlandı. macOS ve Linux destekleri eklendi.",
+  "pub_date": "2026-08-16T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "BURAYA_WINDOWS_ICIN_OLUSAN_SIG_DOSYASININ_ICERIGINI_YAPISTIR",
+      "url": "https://github.com/hasanaliduruk/KWIEKLLCREFACTOR/releases/download/v1.3.0/OperationsToolkit_1.3.0_x64_en-US.msi.zip"
+    },
+    "darwin-x86_64": {
+      "signature": "BURAYA_MAC_ICIN_OLUSAN_SIG_DOSYASININ_ICERIGINI_YAPISTIR",
+      "url": "https://github.com/hasanaliduruk/KWIEKLLCREFACTOR/releases/download/v1.3.0/OperationsToolkit_1.3.0_x64.app.tar.gz"
+    },
+    "linux-x86_64": {
+      "signature": "BURAYA_LINUX_ICIN_OLUSAN_SIG_DOSYASININ_ICERIGINI_YAPISTIR",
+      "url": "https://github.com/hasanaliduruk/KWIEKLLCREFACTOR/releases/download/v1.3.0/OperationsToolkit_1.3.0_amd64.AppImage.tar.gz"
+    }
+  }
+}

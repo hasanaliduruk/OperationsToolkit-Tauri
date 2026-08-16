@@ -1,0 +1,4 @@
+{
+    "restock_columns": { "upc": ["Upc"], "pcs": ["PCS"], "suplier": ["suplier"], "notes": ["Notes"] },
+    "orderform_columns": { "upc": ["UPC"], "pcs": ["PCS(TOTAL)"], "suplier": ["suplier"] }
+}
