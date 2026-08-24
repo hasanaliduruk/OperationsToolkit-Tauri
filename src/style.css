@@ -2056,7 +2056,7 @@ textarea.settings-box:focus { border-color: var(--accent-dim); }
 /* vertically too (so cards don't look long and thin) and bump fonts a     */
 /* little. Below this width everything stays at the comfortable default.   */
 /* ---------------------------------------------------------------------- */
-@media (min-width: 1300px) {
+@media (min-width: 1280px) {
   .app {
     grid-template-columns: 300px 1fr;
   }
@@ -2311,4 +2311,54 @@ textarea.settings-box:focus { border-color: var(--accent-dim); }
 
 .anim-pop {
   animation: popIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* FBA TABLE STYLES */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 13px;
+  background-color: var(--panel-bg);
+  white-space: nowrap;
+}
+
+.data-table th, .data-table td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+.data-table th {
+  background-color: #1F497D;
+  color: #ffffff;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  text-align: center;
+}
+
+.data-table tbody tr:nth-child(even) {
+  background-color: var(--panel-raised);
+}
+
+.data-table tbody tr:hover {
+  background-color: rgba(2, 136, 209, 0.1);
+}
+
+.clickable-cell {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.clickable-cell:hover {
+  background-color: rgba(2, 136, 209, 0.3) !important;
+  color: var(--text);
+}
+
+mark.highlight {
+  background-color: #ffeb3b;
+  color: #000000;
+  padding: 0 2px;
+  border-radius: 2px;
+  font-weight: bold;
 }

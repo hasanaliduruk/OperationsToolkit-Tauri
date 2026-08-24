@@ -8,10 +8,11 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18];
 const DEFAULT_FONT = 14;
@@ -531,10 +532,10 @@ class FileDropZone {
   constructor({ zoneId, listId, fileTypes = null, multiple = true, accept = null, reorderable = false }) {
     this.zone = document.getElementById(zoneId);
     this.list = document.getElementById(listId);
-    this.fileTypes = fileTypes; 
+    this.fileTypes = fileTypes;
     this.multiple = multiple;
-    this.accept = accept; 
-    this.reorderable = reorderable; 
+    this.accept = accept;
+    this.reorderable = reorderable;
     this.files = [];
     this.selected = new Set();
     this._dragFromIndex = null;
@@ -542,17 +543,6 @@ class FileDropZone {
     dropZoneRegistry[zoneId] = this;
 
     this.zone.addEventListener("click", () => this.browse());
-    this.zone.addEventListener("dragover", (e) => { e.preventDefault(); this.zone.classList.add("drag-over"); });
-    this.zone.addEventListener("dragleave", () => this.zone.classList.remove("drag-over"));
-    this.zone.addEventListener("drop", (e) => { 
-        e.preventDefault(); 
-        this.zone.classList.remove("drag-over"); 
-        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
-            // Tauri'nin File objesine enjekte ettiği "path" (mutlak yol) verisini al
-            const filePaths = Array.from(e.dataTransfer.files).map((f: any) => f.path || f.name);
-            this.addFiles(filePaths);
-        }
-    });
   }
 
   async browse() {
@@ -726,6 +716,35 @@ class FileDropZone {
   }
 }
 
+async function initTauriDragDrop() {
+  await getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === "hover") {
+      const { position } = event.payload;
+      const targetElement = document.elementFromPoint(position.x, position.y);
+      const zoneEl = targetElement?.closest(".dropzone, [id$='-dropzone']");
+      
+      document.querySelectorAll(".drag-over").forEach(el => el.classList.remove("drag-over"));
+      if (zoneEl) zoneEl.classList.add("drag-over");
+
+    } else if (event.payload.type === "drop") {
+      document.querySelectorAll(".drag-over").forEach(el => el.classList.remove("drag-over"));
+      
+      const { paths, position } = event.payload;
+      const targetElement = document.elementFromPoint(position.x, position.y);
+      const zoneEl = targetElement?.closest(".dropzone, [id$='-dropzone']");
+
+      if (zoneEl && paths && paths.length > 0) {
+        const zoneInstance = dropZoneRegistry[zoneEl.id];
+        if (zoneInstance) {
+          zoneInstance.addFiles(paths);
+        }
+      }
+    } else if (event.payload.type === "cancel") {
+      document.querySelectorAll(".drag-over").forEach(el => el.classList.remove("drag-over"));
+    }
+  });
+}
+
 // ---------------------------------------------------------------------
 // Console & Tool Status Builders
 // ---------------------------------------------------------------------
@@ -860,6 +879,264 @@ document.getElementById("tsv-run-btn").addEventListener("click", async () => {
   prepareJobUI("tsv");
   await invoke('run_tsv', { files: tsvZone.files, outputFolder, saveName: document.getElementById("tsv-save-name").value.trim() || "Converted_File" });
 });
+
+const fbaManager = {
+  data: { sirali: [], analiz: [], stock: {} },
+
+  init() {
+    document.getElementById("fba-btn-master")?.addEventListener("click", () => this.importFile("master"));
+    document.getElementById("fba-btn-picklist")?.addEventListener("click", () => this.importFile("picklist"));
+    document.getElementById("fba-btn-stock")?.addEventListener("click", () => this.importFile("stock"));
+    document.getElementById("fba-btn-detect")?.addEventListener("click", () => this.detectIDs());
+    document.getElementById("fba-btn-reset")?.addEventListener("click", () => this.resetData());
+    document.getElementById("fba-btn-undo")?.addEventListener("click", () => this.undoReset());
+    document.getElementById("fba-btn-export")?.addEventListener("click", () => this.exportExcel());
+
+    let debounceTimer: number;
+    const filterInputs = ["fba-skt-min", "fba-skt-max", "fba-amz-min", "fba-amz-max", "fba-search"];
+    
+    filterInputs.forEach(id => {
+      document.getElementById(id)?.addEventListener("input", () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = window.setTimeout(() => this.applyFilters(), 250);
+      });
+    });
+
+    document.getElementById("fba-btn-clear-filters")?.addEventListener("click", () => {
+      filterInputs.forEach(id => (document.getElementById(id) as HTMLInputElement).value = "");
+      this.applyFilters();
+    });
+  },
+
+  renderTables() {
+    this._renderSirali();
+    this._renderAnaliz();
+    this._renderStock();
+    this.applyFilters();
+  },
+
+  async reloadData() {
+    try {
+      // Rust backend'den veriyi çek
+      const res: any = await invoke("inv_get_all_data");
+      this.data = res;
+      this.renderTables();
+    } catch (e) {
+      console.error("Veri okuma hatası:", e);
+      // toast() fonksiyonunun projende global tanımlı olduğunu varsayıyoruz
+    }
+  },
+
+  async importFile(type: string) {
+    try {
+      const selected = await open({
+        multiple: type === "picklist",
+        filters: [{ name: "Spreadsheet", extensions: ["xlsx", "xls", "csv"] }]
+      });
+      
+      if (!selected) return;
+
+      let msg = "";
+      if (type === "master") {
+        msg = await invoke("inv_import_master_excel", { filePath: selected as string });
+      } else if (type === "picklist") {
+        msg = await invoke("inv_import_picklist", { filePaths: selected as string[] });
+      } else if (type === "stock") {
+        msg = await invoke("inv_import_stock", { filePath: selected as string });
+      }
+      
+      this.reloadData();
+    } catch (e) {
+      console.error("İçe aktarma hatası:", e);
+    }
+  },
+
+  async detectIDs() {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Spreadsheet", extensions: ["xlsx", "xls", "csv"] }]
+      });
+      if (!selected) return;
+
+      const res: any = await invoke("inv_detect_missing_ids", { filePath: selected as string });
+      if (res.missing.length === 0) {
+        console.log("Tüm ID'ler sistemde kayıtlı.");
+      } else {
+        console.log("Eksik ID'ler:\n" + res.missing.join("\n"));
+      }
+    } catch (e) {
+      console.error("ID Tespit hatası:", e);
+    }
+  },
+
+  async resetData() {
+    const securityCheck = prompt("TÜM VERİLER SİLİNECEK!\nBu işlemi onaylamak için kutuya büyük harflerle 'ONAY' yazın:");
+    
+    if (securityCheck !== "ONAY") {
+      console.log("Güvenlik kontrolü başarısız: Sıfırlama işlemi iptal edildi.");
+      return; 
+    }
+
+    try {
+      const msg = await invoke("inv_reset_data");
+      console.log(msg);
+      document.getElementById("fba-btn-undo").style.display = "inline-block";
+      this.reloadData();
+    } catch (e) {
+      console.error("Sıfırlama Hatası: " + e);
+    }
+  },
+  
+  async undoReset() {
+    try {
+      const msg = await invoke("inv_undo_reset");
+      console.log(msg); // Tauri'den dönen kurtarma mesajı
+      document.getElementById("fba-btn-undo").style.display = "none";
+      this.reloadData();
+    } catch (e) {
+      console.error("Kurtarma Hatası: " + e);
+    }
+  },
+
+  async exportExcel() {
+    try {
+      const savePath = await save({
+        filters: [{ name: "Excel Raporu", extensions: ["xlsx"] }],
+        defaultPath: "Expration Date Analizi.xlsx"
+      });
+      if (!savePath) return;
+
+      await invoke("inv_export_excel", { outputPath: savePath });
+      console.log("Rapor oluşturuldu: " + savePath);
+    } catch (e) {
+      console.error("Dışa aktarma hatası:", e);
+    }
+  },
+  _renderSirali() {
+    const tbody = document.querySelector("#fba-table-sirali tbody");
+    if (!tbody) return;
+    
+    tbody.innerHTML = this.data.sirali.map(r => {
+      const searchStr = `${r.shipment_name || ''} ${r.shipment_id || ''} ${r.sku || ''}`.replace(/"/g, '').toLowerCase();
+      
+      return `
+      <tr data-search="${searchStr}" data-skt="${r.days_remaining || 0}" data-amz="${r.amz_stock_days || 0}">
+        <td class="clickable-cell">${r.shipment_name}</td>
+        <td class="clickable-cell">${r.shipment_id}</td>
+        <td>${r.created_date}</td>
+        <td class="clickable-cell">${r.sku}</td>
+        <td style="text-align:center;">${r.qty_shipped}</td>
+        <td class="clickable-cell">${r.exp_date_usa}</td>
+        <td>${r.exp_date_tur}</td>
+        <td style="text-align:center;">${r.days_remaining}</td>
+        <td style="text-align:center;">${r.amz_stock_days}</td>
+      </tr>
+    `}).join("");
+  },
+
+  _renderAnaliz() {
+    const tbody = document.querySelector("#fba-table-analiz tbody");
+    if (!tbody) return;
+    
+    const skuCounts = this.data.analiz.reduce((acc, r) => { acc[r.sku] = (acc[r.sku] || 0) + 1; return acc; }, {});
+
+    tbody.innerHTML = this.data.analiz.map(r => {
+      const isMultiple = skuCounts[r.sku] > 1;
+      const isCritical = r.days_remaining <= 180;
+      const hasStock = r.amz_stock_allocated > 0;
+      
+      const skuStyle = isMultiple ? 'background-color:#C6EFCE; color:#006100; font-weight:bold;' : '';
+      const stockStyle = hasStock ? 'background-color:#C6EFCE; color:#006100; font-weight:bold; text-align:center;' : 'text-align:center;';
+      const sktStyle = isCritical ? 'background-color:#FFCDD2; color:#B71C1C; font-weight:bold; text-align:center;' : 'text-align:center;';
+      
+      const searchStr = `${r.shipment_name || ''} ${r.shipment_id || ''} ${r.sku || ''}`.replace(/"/g, '').toLowerCase();
+
+      return `
+        <tr data-search="${searchStr}" data-skt="${r.days_remaining || 0}" data-amz="${r.amz_stock_days || 0}">
+          <td class="clickable-cell">${r.shipment_name}</td>
+          <td class="clickable-cell">${r.shipment_id}</td>
+          <td class="clickable-cell" style="${skuStyle}">${r.sku}</td>
+          <td style="text-align:center;">${r.qty_shipped}</td>
+          <td style="${stockStyle}">${r.amz_stock_allocated}</td>
+          <td style="text-align:center;">${r.amz_stock_days}</td>
+          <td style="${sktStyle}">${r.days_remaining}</td>
+          <td style="padding:0; min-width: 150px;">
+            <input type="text" class="fba-note-input" value="${(r.note || '').replace(/"/g, '&quot;')}" 
+                   data-id="${r.shipment_id}" data-sku="${r.sku}" data-exp="${r.exp_date_usa}"
+                   style="width:100%; height:100%; border:none; background:transparent; padding:8px; color:var(--text); outline:none;">
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    document.querySelectorAll(".fba-note-input").forEach(inp => {
+      inp.addEventListener("change", async (e) => {
+        const { id, sku, exp } = e.target.dataset;
+        await invoke("inv_update_note", { shipmentId: id, sku: sku, expDateUsa: exp, note: e.target.value });
+        toast("Not güncellendi.");
+      });
+    });
+  },
+
+  _renderStock() {
+    const tbody = document.querySelector("#fba-table-amz tbody");
+    if (!tbody) return;
+    tbody.innerHTML = Object.entries(this.data.stock).map(([sku, qty]) => `
+      <tr data-search="${sku}">
+        <td>${sku}</td><td style="text-align:center;">${qty}</td>
+      </tr>
+    `).join("");
+  },
+
+  applyFilters() {
+    const searchInput = document.getElementById("fba-search").value.trim();
+    const search = searchInput.toLowerCase();
+    
+    // Düzenli İfade (Regex) inşası - Güvenlik yalıtımı yapıldı
+    const regex = search ? new RegExp(`(${search.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')})`, 'gi') : null;
+    
+    const sktMinInput = document.getElementById("fba-skt-min").value;
+    const sktMin = sktMinInput === "" ? -999999 : parseInt(sktMinInput, 10);
+    const sktMaxInput = document.getElementById("fba-skt-max").value;
+    const sktMax = sktMaxInput === "" ? 999999 : parseInt(sktMaxInput, 10);
+    
+    const amzMinInput = document.getElementById("fba-amz-min").value;
+    const amzMin = amzMinInput === "" ? -999999 : parseInt(amzMinInput, 10);
+    const amzMaxInput = document.getElementById("fba-amz-max").value;
+    const amzMax = amzMaxInput === "" ? 999999 : parseInt(amzMaxInput, 10);
+
+    const highlightCell = (td) => {
+      if (td.querySelector('input')) return; // Input olan hücreyi (Not sütunu) asla bozma
+      
+      const originalText = td.dataset.orig || td.textContent;
+      if (!td.dataset.orig) td.dataset.orig = originalText;
+
+      if (!search) {
+          td.innerHTML = originalText;
+          return;
+      }
+      td.innerHTML = originalText.replace(regex, '<mark class="highlight">$1</mark>');
+    };
+
+    document.querySelectorAll("#fba-table-sirali tbody tr, #fba-table-analiz tbody tr").forEach(tr => {
+      const textMatch = !search || (tr.dataset.search && tr.dataset.search.includes(search));
+      const skt = parseInt(tr.dataset.skt, 10) || 0;
+      const amz = parseInt(tr.dataset.amz, 10) || 0;
+      
+      const isVisible = textMatch && (skt >= sktMin && skt <= sktMax) && (amz >= amzMin && amz <= amzMax);
+      tr.style.display = isVisible ? "" : "none";
+
+      if (isVisible) Array.from(tr.children).forEach(highlightCell);
+    });
+
+    document.querySelectorAll("#fba-table-amz tbody tr").forEach(tr => {
+      const textMatch = !search || (tr.dataset.search && tr.dataset.search.includes(search));
+      tr.style.display = textMatch ? "" : "none";
+      if (textMatch) Array.from(tr.children).forEach(highlightCell);
+    });
+  }
+};
 
 // Cost Updater
 const cuZone = new FileDropZone({ zoneId: "cu-dropzone", listId: "cu-file-list", multiple: false, fileTypes: ["CSV Files (*.csv)", "All files (*.*)"], accept: (p) => p.toLowerCase().endsWith(".csv") });
@@ -1449,6 +1726,9 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // Arayüz başlatma mantığı
   updatesView.init(); 
+  initTauriDragDrop();
+  fbaManager.init();
+  fbaManager.reloadData();
   applyResponsiveSettings();
   initConsoleCopyButtons();
 

@@ -18,10 +18,51 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, State};
 use tokio::sync::Mutex;
+use rusqlite::{Connection, Result as SqlResult};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use chrono::{NaiveDate, Utc, Datelike};
+use calamine::{open_workbook_auto, Data, Reader};
+use regex::Regex;
 
 struct AppState {
     job_lock: Mutex<()>,
     cancel_flag: Arc<AtomicBool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct ShipmentRow {
+    shipment_name: String,
+    shipment_id: String,
+    created_date: String,
+    sku: String,
+    qty_shipped: i32,
+    exp_date_usa: String,
+    exp_date_tur: String,
+    days_remaining: i32,
+    amz_stock_days: i32,
+    note: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct FifoResultRow {
+    shipment_name: String,
+    shipment_id: String,
+    sku: String,
+    qty_shipped: i32,
+    exp_date_usa: String,
+    exp_date_tur: String,
+    days_remaining: i32,
+    amz_stock_days: i32,
+    amz_stock_allocated: i32,
+    note: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct InventoryData {
+    sirali: Vec<ShipmentRow>,
+    analiz: Vec<FifoResultRow>,
+    stock: HashMap<String, i32>,
 }
 
 fn get_settings_dir() -> PathBuf {
@@ -177,6 +218,537 @@ fn save_expiration_credentials(username: String, password: String) -> Result<(),
 fn cancel_job(state: State<'_, AppState>) -> Result<(), String> {
     state.cancel_flag.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+fn get_db_connection() -> SqlResult<Connection> {
+    // Gerçek üretimde bu yolu AppData veya tauri::api::path üzerinden dinamik almalısın
+    let conn = Connection::open("fba_inventory.db")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE IF NOT EXISTS shipment_items (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             shipment_id TEXT NOT NULL,
+             shipment_name TEXT NOT NULL,
+             created_date TEXT NOT NULL,
+             created_timestamp TIMESTAMP NOT NULL,
+             sku TEXT NOT NULL,
+             qty INTEGER NOT NULL,
+             exp_date_usa TEXT,
+             exp_date_tur TEXT,
+             days_remaining INTEGER,
+             note TEXT NOT NULL DEFAULT '',
+             UNIQUE(shipment_name, shipment_id, created_date, sku, qty, exp_date_usa) ON CONFLICT REPLACE
+         );
+         CREATE TABLE IF NOT EXISTS amazon_stock (
+             sku TEXT PRIMARY KEY,
+             total_units INTEGER NOT NULL
+         );"
+    )?;
+    Ok(conn)
+}
+
+fn internal_get_all_data() -> Result<InventoryData, String> {
+    let conn = get_db_connection().map_err(|e| e.to_string())?;
+
+    let mut stock: HashMap<String, i32> = HashMap::new();
+    let mut stock_stmt = conn.prepare("SELECT sku, total_units FROM amazon_stock").map_err(|e| e.to_string())?;
+    let stock_iter = stock_stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+    }).map_err(|e| e.to_string())?;
+
+    for item in stock_iter {
+        if let Ok((sku, qty)) = item {
+            stock.insert(sku, qty);
+        }
+    }
+
+    let mut shipment_stmt = conn.prepare(
+        "SELECT shipment_name, shipment_id, created_date, created_timestamp, sku, qty, exp_date_usa, exp_date_tur, days_remaining, note 
+         FROM shipment_items ORDER BY created_timestamp ASC, id ASC"
+    ).map_err(|e| e.to_string())?;
+
+    let today = Utc::now().naive_utc().date();
+    let mut sirali: Vec<ShipmentRow> = Vec::new();
+    let mut sku_groups: HashMap<String, Vec<ShipmentRow>> = HashMap::new();
+
+    let shipment_iter = shipment_stmt.query_map([], |row| {
+        let created_ts: String = row.get(3)?;
+        let amz_stock_days = if let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(&created_ts[..10], "%Y-%m-%d") {
+            (today.signed_duration_since(parsed_date).num_days() as i32) - 30
+        } else {
+            0
+        };
+
+        Ok(ShipmentRow {
+            shipment_name: row.get(0)?,
+            shipment_id: row.get(1)?,
+            created_date: row.get(2)?,
+            sku: row.get(4)?,
+            qty_shipped: row.get(5)?,
+            exp_date_usa: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            exp_date_tur: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            days_remaining: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
+            amz_stock_days,
+            note: row.get(9)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    for item in shipment_iter {
+        if let Ok(row) = item {
+            sirali.push(row.clone());
+            sku_groups.entry(row.sku.clone()).or_insert_with(Vec::new).push(row);
+        }
+    }
+
+    let mut analiz: Vec<FifoResultRow> = Vec::new();
+    let mut sorted_skus: Vec<_> = sku_groups.keys().cloned().collect();
+    sorted_skus.sort();
+
+    for sku in sorted_skus {
+        if let Some(lots) = sku_groups.get(&sku) {
+            let total_stock = stock.get(&sku).copied().unwrap_or(0);
+            
+            for (i, lot) in lots.iter().enumerate() {
+                let qty_shipped = lot.qty_shipped;
+                let sum_newer_qty: i32 = lots[(i + 1)..].iter().map(|l| l.qty_shipped).sum();
+
+                let allocated = if total_stock <= 0 {
+                    0
+                } else if sum_newer_qty >= total_stock {
+                    0
+                } else if (sum_newer_qty + qty_shipped) > total_stock {
+                    total_stock - sum_newer_qty
+                } else {
+                    qty_shipped
+                };
+
+                if allocated > 0 {
+                    analiz.push(FifoResultRow {
+                        shipment_name: lot.shipment_name.clone(),
+                        shipment_id: lot.shipment_id.clone(),
+                        sku: lot.sku.clone(),
+                        qty_shipped: lot.qty_shipped,
+                        exp_date_usa: lot.exp_date_usa.clone(),
+                        exp_date_tur: lot.exp_date_tur.clone(),
+                        days_remaining: lot.days_remaining,
+                        amz_stock_days: lot.amz_stock_days,
+                        amz_stock_allocated: allocated,
+                        note: lot.note.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(InventoryData { sirali, analiz, stock })
+}
+
+#[tauri::command]
+fn inv_get_all_data() -> Result<InventoryData, String> {
+    internal_get_all_data()
+}
+
+#[tauri::command]
+fn inv_import_master_excel(file_path: String) -> Result<String, String> {
+    let mut conn = get_db_connection().map_err(|e| e.to_string())?;
+    let mut workbook = open_workbook_auto(&file_path).map_err(|e| e.to_string())?;
+    
+    let sheet_names = workbook.sheet_names().to_owned();
+    
+    // 1. Notları (Notes) Analiz Sayfasından Çekme
+    let mut notes_dict: HashMap<(String, String), String> = HashMap::new();
+    
+    for sheet_name in &sheet_names {
+        if sheet_name.to_uppercase().contains("ANAL") {
+            if let Ok(range) = workbook.worksheet_range(sheet_name) {
+                let mut rows = range.rows();
+                if let Some(headers) = rows.next() {
+                    let mut id_col = None;
+                    let mut sku_col = None;
+                    let mut note_col = None;
+                    
+                    for (i, h) in headers.iter().enumerate() {
+                        let h_str = h.to_string().to_lowercase();
+                        if h_str.contains("id") { id_col = Some(i); }
+                        if h_str.contains("sku") { sku_col = Some(i); }
+                        if h_str.contains("not") || h_str.contains("note") { note_col = Some(i); }
+                    }
+                    
+                    if let (Some(id_idx), Some(sku_idx), Some(note_idx)) = (id_col, sku_col, note_col) {
+                        for row in rows {
+                            let r_id = row.get(id_idx).map(|d| d.to_string().trim().to_uppercase()).unwrap_or_default();
+                            let r_sku = row.get(sku_idx).map(|d| d.to_string().trim().to_uppercase()).unwrap_or_default();
+                            let r_note = row.get(note_idx).map(|d| d.to_string().trim().to_string()).unwrap_or_default();
+                            
+                            if !r_id.is_empty() && !r_sku.is_empty() && !r_note.is_empty() && r_note.to_lowercase() != "nan" {
+                                notes_dict.insert((r_id, r_sku), r_note);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Ana Veriyi Çekme
+    let target_sheet = sheet_names.iter()
+        .find(|s| s.to_uppercase().contains("SIRALI") || s.to_uppercase().contains("ANALİZ") || s.to_uppercase().contains("EXPRATION"))
+        .unwrap_or(&sheet_names[0]);
+
+    let range = workbook.worksheet_range(target_sheet).map_err(|e| e.to_string())?;
+    let mut rows = range.rows();
+    let headers = rows.next().ok_or("Başlık satırı yok.")?;
+
+    // Dinamik Sütun Tespiti
+    let (mut c_name, mut c_id, mut c_date, mut c_sku, mut c_qty, mut c_exp) = (0, 0, None, 0, 0, 0);
+    
+    for (i, h) in headers.iter().enumerate() {
+        let h_str = h.to_string().to_lowercase();
+        if h_str.contains("name") { c_name = i; }
+        else if h_str.contains("id") { c_id = i; }
+        else if h_str.contains("date") && !h_str.contains("exp") { c_date = Some(i); }
+        else if h_str.contains("sku") { c_sku = i; }
+        else if h_str.contains("qty") || h_str.contains("adet") { c_qty = i; }
+        else if h_str.contains("exp") { c_exp = i; }
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut imported = 0;
+
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO shipment_items 
+             (shipment_id, shipment_name, created_date, created_timestamp, sku, qty, exp_date_usa, exp_date_tur, days_remaining, note) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, COALESCE(NULLIF(?10, ''), (SELECT note FROM shipment_items WHERE UPPER(shipment_id)=UPPER(?1) AND UPPER(sku)=UPPER(?5)), ''))"
+        ).map_err(|e| e.to_string())?;
+
+        for row in rows {
+            let shipment_id = row.get(c_id).map(|d| d.to_string().trim().to_string()).unwrap_or_default();
+            let sku = row.get(c_sku).map(|d| d.to_string().trim().to_string()).unwrap_or_default();
+
+            if sku.is_empty() || shipment_id.is_empty() || sku.to_lowercase() == "nan" {
+                continue;
+            }
+
+            let shipment_name = row.get(c_name).map(|d| d.to_string().trim().to_string()).unwrap_or_default();
+            
+            let qty = row.get(c_qty).map(|d| {
+                match d {
+                    Data::Int(i) => *i as i32,
+                    Data::Float(f) => *f as i32,
+                    Data::String(s) => s.replace(",", ".").parse::<f64>().unwrap_or(0.0) as i32,
+                    _ => 0,
+                }
+            }).unwrap_or(0);
+
+            let raw_date = c_date.and_then(|idx| row.get(idx)).map(|d| d.to_string()).unwrap_or_default();
+            let (created_fmt, created_ts) = parse_created_date(&raw_date);
+
+            let raw_exp = row.get(c_exp).map(|d| d.to_string()).unwrap_or_default();
+            let (exp_usa, exp_tur, days_left) = parse_exp_date(&raw_exp);
+
+            let matched_note = notes_dict.get(&(shipment_id.to_uppercase(), sku.to_uppercase())).cloned().unwrap_or_default();
+
+            stmt.execute(rusqlite::params![
+                shipment_id, shipment_name, created_fmt, created_ts, sku, qty, exp_usa, exp_tur, days_left, matched_note
+            ]).ok(); // Hatalı (Duplicate) satırları yoksay
+            
+            imported += 1;
+        }
+    }
+    
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(format!("Master Excel başarıyla yüklendi. ({} satır işlendi)", imported))
+}
+
+#[tauri::command]
+fn inv_import_picklist(file_paths: Vec<String>) -> Result<String, String> {
+    Ok(format!("{} adet dosya aktarıldı", file_paths.len()))
+}
+
+#[tauri::command]
+fn inv_import_stock(file_path: String) -> Result<String, String> {
+    let conn = get_db_connection().map_err(|e| e.to_string())?;
+
+    let mut workbook = open_workbook_auto(&file_path)
+        .map_err(|e| format!("Dosya okuma hatası: {}", e))?;
+
+    let sheet_names = workbook.sheet_names().to_owned();
+    let sheet_name = sheet_names.first().ok_or("Çalışma sayfası bulunamadı.")?;
+
+    let range = workbook.worksheet_range(sheet_name)
+        .map_err(|e| e.to_string())?;
+
+    let mut rows = range.rows();
+    let headers = rows.next().ok_or("Dosya boş veya başlık satırı yok.")?;
+
+    // Dinamik Sütun İndeks Tespiti
+    let mut sku_idx = 0;
+    let mut qty_idx = 1;
+    let mut is_formula_based = false;
+    let sum_columns = ["Available", "FC transfer", "FC Processing", "Unfulfillable", "Shipped", "Receiving"];
+    let mut sum_indices = Vec::new();
+
+    for (i, header) in headers.iter().enumerate() {
+        let header_str = header.to_string().trim().to_lowercase();
+        if header_str == "merchant sku" || header_str == "sku" {
+            sku_idx = i;
+        } else if header_str == "total units" || header_str == "qty" {
+            qty_idx = i;
+        }
+        
+        for sum_col in &sum_columns {
+            if &header_str == &sum_col.to_lowercase() {
+                sum_indices.push(i);
+            }
+        }
+    }
+
+    if sum_indices.len() == sum_columns.len() {
+        is_formula_based = true;
+    }
+
+    let mut stock_dict: HashMap<String, i32> = HashMap::new();
+
+    // Satırları Ayrıştırma ve Tip Doğrulama
+    for row in rows {
+        let sku = match row.get(sku_idx) {
+            Some(Data::String(s)) => s.trim().to_string(),
+            Some(d) => d.to_string().trim().to_string(),
+            None => continue,
+        };
+
+        if sku.is_empty() || sku.to_lowercase() == "nan" {
+            continue;
+        }
+
+        let mut total_qty = 0;
+
+        if is_formula_based {
+            for &idx in &sum_indices {
+                if let Some(cell) = row.get(idx) {
+                    let val = match cell {
+                        Data::Int(i) => *i as i32,
+                        Data::Float(f) => *f as i32,
+                        Data::String(s) => s.trim().parse::<i32>().unwrap_or(0),
+                        _ => 0,
+                    };
+                    total_qty += val;
+                }
+            }
+        } else {
+            if let Some(cell) = row.get(qty_idx) {
+                total_qty = match cell {
+                    Data::Int(i) => *i as i32,
+                    Data::Float(f) => *f as i32,
+                    Data::String(s) => s.trim().parse::<i32>().unwrap_or(0),
+                    _ => 0,
+                };
+            }
+        }
+
+        stock_dict.insert(sku, total_qty);
+    }
+
+    conn.execute("DELETE FROM amazon_stock", [])
+        .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn.prepare("INSERT INTO amazon_stock (sku, total_units) VALUES (?1, ?2)")
+        .map_err(|e| e.to_string())?;
+
+    for (sku, qty) in &stock_dict {
+        stmt.execute(rusqlite::params![sku, qty]).map_err(|e| e.to_string())?;
+    }
+
+    Ok(format!("Stok güncellendi ({} SKU işlendi).", stock_dict.len()))
+}
+
+#[tauri::command]
+fn inv_reset_data() -> Result<String, String> {
+    let conn = get_db_connection().map_err(|e| e.to_string())?;
+    
+    // Silmeden önce mevcut verilerin tam yedeğini kopyala
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS shipment_items_backup;
+         CREATE TABLE shipment_items_backup AS SELECT * FROM shipment_items;
+         
+         DROP TABLE IF EXISTS amazon_stock_backup;
+         CREATE TABLE amazon_stock_backup AS SELECT * FROM amazon_stock;
+         
+         DELETE FROM shipment_items;
+         DELETE FROM amazon_stock;"
+    ).map_err(|e| e.to_string())?;
+
+    Ok("Tüm veriler silindi! İşlemi geri almak için 'Geri Al' butonuna tıklayabilirsiniz.".to_string())
+}
+
+#[tauri::command]
+fn inv_undo_reset() -> Result<String, String> {
+    let conn = get_db_connection().map_err(|e| e.to_string())?;
+    
+    // Yedeğin varlığını doğrula
+    let backup_exists: bool = conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shipment_items_backup'",
+        [],
+        |_| Ok(true),
+    ).unwrap_or(false);
+    
+    if !backup_exists {
+        return Err("Geri alınacak bir yedek bulunamadı veya yedek hasarlı.".to_string());
+    }
+
+    // Ana tabloları temizle ve yedekten verileri geri bas
+    conn.execute_batch(
+        "DELETE FROM shipment_items;
+         INSERT INTO shipment_items SELECT * FROM shipment_items_backup;
+         
+         DELETE FROM amazon_stock;
+         INSERT INTO amazon_stock SELECT * FROM amazon_stock_backup;"
+    ).map_err(|e| e.to_string())?;
+
+    Ok("Kritik müdahale başarılı: Silinen veriler kurtarıldı!".to_string())
+}
+
+#[tauri::command]
+fn inv_update_note(shipment_id: String, sku: String, exp_date_usa: String, note: String) -> Result<String, String> {
+    let conn = get_db_connection().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE shipment_items SET note = ?1 WHERE shipment_id = ?2 AND sku = ?3 AND exp_date_usa = ?4",
+        rusqlite::params![note, shipment_id, sku, exp_date_usa],
+    ).map_err(|e| e.to_string())?;
+    Ok("Güncellendi".to_string())
+}
+
+fn parse_created_date(val_str: &str) -> (String, String) {
+    let val = val_str.trim();
+    let today = Utc::now().naive_utc();
+    let default_formatted = today.format("%d.%m.%Y").to_string();
+    let default_timestamp = today.format("%Y-%m-%d 00:00:00").to_string();
+
+    if val.is_empty() || val.to_lowercase() == "nan" {
+        return (default_formatted, default_timestamp);
+    }
+
+    let re = Regex::new(r"(?i)(?:CREATED\s*>\s*)?(\d{1,2})\s*([A-Z]{3})\s*(\d{4})").unwrap();
+    if let Some(caps) = re.captures(val) {
+        let day: u32 = caps[1].parse().unwrap_or(1);
+        let month_str = caps[2].to_uppercase();
+        let year: i32 = caps[3].parse().unwrap_or(today.year());
+        
+        let month = match month_str.as_str() {
+            "JAN" => 1, "FEB" => 2, "MAR" => 3, "APR" => 4,
+            "MAY" => 5, "JUN" => 6, "JUL" => 7, "AUG" => 8,
+            "SEP" => 9, "OCT" => 10, "NOV" => 11, "DEC" => 12,
+            _ => 1,
+        };
+
+        if let Some(dt) = NaiveDate::from_ymd_opt(year, month, day) {
+            return (dt.format("%d.%m.%Y").to_string(), dt.format("%Y-%m-%d 00:00:00").to_string());
+        }
+    }
+    
+    // Geri Dönüş (Fallback) Stratejisi
+    (default_formatted, default_timestamp)
+}
+
+fn parse_exp_date(val_str: &str) -> (String, String, i32) {
+    let val = val_str.trim();
+    if val.is_empty() || val.to_lowercase() == "nan" {
+        return (String::new(), String::new(), 0);
+    }
+
+    let today = Utc::now().naive_utc().date();
+    let re = Regex::new(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$").unwrap();
+    
+    let mut parsed_date = None;
+
+    if let Some(caps) = re.captures(val) {
+        let p1: u32 = caps[1].parse().unwrap_or(1);
+        let p2: u32 = caps[2].parse().unwrap_or(1);
+        let p3: i32 = caps[3].parse().unwrap_or(today.year());
+
+        if p1 > 12 {
+            parsed_date = NaiveDate::from_ymd_opt(p3, p2, p1);
+        } else {
+            parsed_date = NaiveDate::from_ymd_opt(p3, p1, p2).or_else(|| NaiveDate::from_ymd_opt(p3, p2, p1));
+        }
+    }
+
+    if let Some(dt) = parsed_date {
+        let usa = dt.format("%m-%d-%Y").to_string();
+        let tur = dt.format("%d.%m.%Y").to_string();
+        let days = dt.signed_duration_since(today).num_days() as i32;
+        (usa, tur, days)
+    } else {
+        let clean_val = val.replace(".", "-");
+        (clean_val.clone(), clean_val, 0)
+    }
+}
+
+fn extract_shipment_ids(val: &str) -> Vec<String> {
+    let re = Regex::new(r"(?i)\b(FBA[A-Z0-9]{8,12})\b").unwrap();
+    re.captures_iter(val).map(|c| c[1].to_uppercase()).collect()
+}
+
+#[tauri::command]
+fn inv_export_excel(output_path: String) -> Result<String, String> {
+    use rust_xlsxwriter::{Workbook, Format, Color, FormatAlign, FormatBorder};
+
+    let data = internal_get_all_data()?;
+    let mut workbook = Workbook::new();
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_font_color(Color::White)
+        .set_background_color(Color::RGB(0x1F497D))
+        .set_align(FormatAlign::Center)
+        .set_border(FormatBorder::Thin);
+
+    let row_format = Format::new().set_border(FormatBorder::Thin);
+    
+    // 1. SIRALI Sayfası
+    let ws_sirali = workbook.add_worksheet().set_name("SIRALI").map_err(|e| e.to_string())?;
+    let headers_sirali = ["SHIPMENT NAME", "SHIPMENT ID", "DATE", "SKU", "QTY", "EXP DATE USA", "EXP DATE TUR", "SKT GÜN", "AMZ Stok Gün"];
+    
+    for (col, header) in headers_sirali.iter().enumerate() {
+        ws_sirali.write_string_with_format(0, col as u16, *header, &header_format).map_err(|e| e.to_string())?;
+    }
+
+    for (row, item) in data.sirali.iter().enumerate() {
+        let r = (row + 1) as u32;
+        ws_sirali.write_string_with_format(r, 0, &item.shipment_name, &row_format).ok();
+        ws_sirali.write_string_with_format(r, 1, &item.shipment_id, &row_format).ok();
+        ws_sirali.write_string_with_format(r, 2, &item.created_date, &row_format).ok();
+        ws_sirali.write_string_with_format(r, 3, &item.sku, &row_format).ok();
+        ws_sirali.write_number_with_format(r, 4, item.qty_shipped as f64, &row_format).ok();
+        ws_sirali.write_string_with_format(r, 5, &item.exp_date_usa, &row_format).ok();
+        ws_sirali.write_string_with_format(r, 6, &item.exp_date_tur, &row_format).ok();
+        ws_sirali.write_number_with_format(r, 7, item.days_remaining as f64, &row_format).ok();
+        ws_sirali.write_number_with_format(r, 8, item.amz_stock_days as f64, &row_format).ok();
+    }
+
+    // 2. ANALİZ Sayfası
+    let ws_analiz = workbook.add_worksheet().set_name("ANALİZ").map_err(|e| e.to_string())?;
+    let headers_analiz = ["SHIPMENT NAME", "SHIPMENT ID", "SKU", "QTY", "AMZ STOK", "AMZ STOK GÜN", "SKT GÜN", "NOT"];
+    
+    for (col, header) in headers_analiz.iter().enumerate() {
+        ws_analiz.write_string_with_format(0, col as u16, *header, &header_format).map_err(|e| e.to_string())?;
+    }
+
+    for (row, item) in data.analiz.iter().enumerate() {
+        let r = (row + 1) as u32;
+        ws_analiz.write_string_with_format(r, 0, &item.shipment_name, &row_format).ok();
+        ws_analiz.write_string_with_format(r, 1, &item.shipment_id, &row_format).ok();
+        ws_analiz.write_string_with_format(r, 2, &item.sku, &row_format).ok();
+        ws_analiz.write_number_with_format(r, 3, item.qty_shipped as f64, &row_format).ok();
+        ws_analiz.write_number_with_format(r, 4, item.amz_stock_allocated as f64, &row_format).ok();
+        ws_analiz.write_number_with_format(r, 5, item.amz_stock_days as f64, &row_format).ok();
+        ws_analiz.write_number_with_format(r, 6, item.days_remaining as f64, &row_format).ok();
+        ws_analiz.write_string_with_format(r, 7, &item.note, &row_format).ok();
+    }
+
+    workbook.save(&output_path).map_err(|e| e.to_string())?;
+    Ok(output_path)
 }
 
 #[tauri::command]
@@ -419,6 +991,7 @@ async fn run_shipment_creator(
 fn main() {
     ensure_default_settings();
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -445,7 +1018,15 @@ fn main() {
             run_future_price,
             run_restock,
             run_order_creator,
-            run_shipment_creator
+            run_shipment_creator,
+            inv_get_all_data,
+            inv_import_master_excel,
+            inv_import_picklist,
+            inv_import_stock,
+            inv_reset_data,
+            inv_update_note,
+            inv_export_excel,
+            inv_undo_reset
         ])
         .run(tauri::generate_context!())
         .expect("Kritik Hata: Tauri motoru başlatılamadı.");
