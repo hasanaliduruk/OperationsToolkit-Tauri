@@ -14,6 +14,28 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
+interface ConfigSchemaSection {
+  key: string;
+  title: string;
+  type: "tags" | "key-value";
+}
+
+interface DropZoneOptions {
+  zoneId: string;
+  listId: string;
+  fileTypes?: string[] | null;
+  multiple?: boolean;
+  accept?: ((path: string) => boolean) | null;
+  reorderable?: boolean;
+}
+
+
+declare global {
+  interface HTMLElement {
+    _t?: any;
+  }
+}
+
 const FONT_SIZES = [12, 13, 14, 15, 16, 17, 18];
 const DEFAULT_FONT = 14;
 const DEFAULT_THEME = "daylight";
@@ -38,7 +60,7 @@ const THEMES = [
 ];
 
 const htmlEl = document.documentElement;
-function parseMarkdown(text) {
+function parseMarkdown(text: string) {
   if (!text) return "";
   let html = text
     // Güvenlik için HTML karakterlerini escape et
@@ -66,11 +88,16 @@ function parseMarkdown(text) {
 // EVRENSEL JSON AYAR EDİTÖRÜ (Universal Config Editor)
 // =======================================================================
 class JSONConfigEditor {
-  constructor(containerId, fileName, configSchema) {
+  containerId: string;
+  fileName: string;
+  configSchema: ConfigSchemaSection[];
+  data: any;
+
+  // Constructor'daki parametre tiplerini belirtiyoruz
+  constructor(containerId: string, fileName: string, configSchema: ConfigSchemaSection[]) {
     this.containerId = containerId;
     this.fileName = fileName;
-    this.configSchema = configSchema; 
-    // configSchema Formatı: [{ key: "columns", title: "Sütunlar", type: "tags" }, { key: "deposits", title: "Maliyetler", type: "key-value" }]
+    this.configSchema = configSchema;
     this.data = {};
   }
 
@@ -144,9 +171,9 @@ class JSONConfigEditor {
     this.attachEvents(container);
   }
 
-  attachEvents(container) {
+  attachEvents(container: HTMLElement) {
     container.querySelectorAll(".tag-input").forEach(input => {
-      input.addEventListener("keydown", (e) => {
+      input.addEventListener("keydown", (e: any) => {
         if (e.key === "Enter") {
           e.preventDefault();
           const val = e.target.value.trim();
@@ -161,7 +188,7 @@ class JSONConfigEditor {
     });
 
     container.querySelectorAll(".file-chip-remove").forEach(btn => {
-      btn.addEventListener("click", (e) => {
+      btn.addEventListener("click", (e: any) => {
         const sec = e.currentTarget.dataset.sec;
         const col = e.currentTarget.dataset.col;
         const val = e.currentTarget.dataset.val;
@@ -171,7 +198,7 @@ class JSONConfigEditor {
     });
 
     container.querySelectorAll(".kv-input").forEach(input => {
-      input.addEventListener("change", (e) => {
+      input.addEventListener("change", (e: any) => {
         const sec = e.target.dataset.sec;
         const key = e.target.dataset.key;
         this.data[sec][key] = parseFloat(e.target.value) || 0;
@@ -179,7 +206,7 @@ class JSONConfigEditor {
     });
 
     container.querySelectorAll(".btn-delete-kv").forEach(btn => {
-      btn.addEventListener("click", (e) => {
+      btn.addEventListener("click", (e: any) => {
         const sec = e.currentTarget.dataset.sec;
         const key = e.currentTarget.dataset.key;
         if (e.currentTarget.dataset.confirm === "1") {
@@ -207,7 +234,7 @@ class JSONConfigEditor {
     });
 
     container.querySelectorAll(".btn-add-kv").forEach(btn => {
-      btn.addEventListener("click", (e) => {
+      btn.addEventListener("click", (e : any) => {
         const sec = e.currentTarget.dataset.sec;
         const input = container.querySelector(`.new-kv-key[data-sec="${sec}"]`);
         const newKey = input.value.trim();
@@ -219,7 +246,7 @@ class JSONConfigEditor {
         }
       });
     });
-    container.querySelector(".btn-save").addEventListener("click", async (e) => {
+    (container.querySelector(".btn-save") as HTMLButtonElement).addEventListener("click", async (e: any) => {
       const btn = e.currentTarget;
       btn.disabled = true;
       await invoke('save_settings', { fileName: this.fileName, content: JSON.stringify(this.data) });
@@ -227,7 +254,7 @@ class JSONConfigEditor {
       btn.disabled = false;
     });
 
-    container.querySelector(".btn-revert").addEventListener("click", () => {
+    (container.querySelector(".btn-revert") as HTMLButtonElement).addEventListener("click", () => {
       this.load();
       toast("Değişiklikler geri alındı.");
     });
@@ -235,7 +262,7 @@ class JSONConfigEditor {
 }
 
 // ── Kayıt / Yükleme ──
-function savePrefs(theme, fontSize) {
+function savePrefs(theme: string, fontSize: number) {
     invoke('set_memory_value', { key: "opkit_theme", value: theme }).then(() => {
       invoke('set_memory_value', { key: "opkit_font", value: String(fontSize) });
   });
@@ -253,7 +280,7 @@ function loadPrefs() {
 }
 
 // ── Tema Uygulama ──
-function applyTheme(theme) {
+function applyTheme(theme: string) {
   htmlEl.setAttribute("data-theme", theme);
   document.querySelectorAll(".theme-swatch").forEach(s => {
     s.classList.toggle("active", s.dataset.theme === theme);
@@ -308,7 +335,7 @@ function createThemeSwatches() {
 }
 
 // Reusable Tag Pill Component Builder
-function createTagInput(tagsArray, onChange, placeholder = "+ Add alias...") {
+function createTagInput(tagsArray: any[], onChange: any, placeholder: string = "+ Add alias...") {
   const container = document.createElement("div");
   container.className = "tag-input-container";
 
@@ -318,7 +345,7 @@ function createTagInput(tagsArray, onChange, placeholder = "+ Add alias...") {
       const pill = document.createElement("span");
       pill.className = "tag-pill";
       pill.innerHTML = `<span>${escapeHtml(tag)}</span><span class="tag-pill-remove" title="Remove alias">&times;</span>`;
-      pill.querySelector(".tag-pill-remove").addEventListener("click", (e) => {
+      pill.querySelector(".tag-pill-remove").addEventListener("click", (e: any) => {
         e.stopPropagation();
         tagsArray.splice(idx, 1);
         render();
@@ -331,7 +358,7 @@ function createTagInput(tagsArray, onChange, placeholder = "+ Add alias...") {
     input.type = "text";
     input.className = "tag-input-field";
     input.placeholder = placeholder;
-    input.addEventListener("keydown", (e) => {
+    input.addEventListener("keydown", (e: any) => {
       if (e.key === "Enter" || e.key === ",") {
         e.preventDefault();
         const val = input.value.trim().replace(/,/g, "");
@@ -355,7 +382,7 @@ function createTagInput(tagsArray, onChange, placeholder = "+ Add alias...") {
 
 // ── Font Boyutu Uygulama ──
 let currentFontSize = DEFAULT_FONT;
-function applyFontSize(size) {
+function applyFontSize(size: number) {
   currentFontSize = Math.max(FONT_SIZES[0], Math.min(size, FONT_SIZES[FONT_SIZES.length - 1]));
   htmlEl.style.setProperty("--base-font-size", currentFontSize + "px");
   const display = document.getElementById("font-size-display");
@@ -467,7 +494,7 @@ function initConsoleCopyButtons() {
   });
 }
 
-function toast(msg) {
+function toast(msg: string) {
   const el = document.getElementById("toast");
   el.textContent = msg;
   el.classList.add("visible");
@@ -522,14 +549,24 @@ document.querySelectorAll("[data-browse-folder]").forEach((btn) => {
 // DYNAMIC FILE DROPZONE (with Selection Toolbar)
 // ---------------------------------------------------------------------
 const dropZoneRegistry = {};
-window.addEventListener("files-dropped", (e) => {
+window.addEventListener("files-dropped", (e: any) => {
   const { zoneId, paths } = e.detail;
   const zone = dropZoneRegistry[zoneId];
   if (zone && paths && paths.length) zone.addFiles(paths);
 });
 
 class FileDropZone {
-  constructor({ zoneId, listId, fileTypes = null, multiple = true, accept = null, reorderable = false }) {
+  zone: HTMLElement | null;
+  list: HTMLElement | null;
+  fileTypes: string[] | null;
+  multiple: boolean;
+  accept: ((path: string) => boolean) | null;
+  reorderable: boolean;
+  files: string[];
+  selected: Set<string>;
+  _dragFromIndex: number | null;
+
+  constructor({ zoneId, listId, fileTypes = null, multiple = true, accept = null, reorderable = false }: DropZoneOptions) {
     this.zone = document.getElementById(zoneId);
     this.list = document.getElementById(listId);
     this.fileTypes = fileTypes;
@@ -550,7 +587,7 @@ class FileDropZone {
     if (picked && picked.length) this.addFiles(picked);
   }
 
-  addFiles(paths) {
+  addFiles(paths: string[]) {
     for (const p of paths) {
       if (this.accept && !this.accept(p)) continue;
       if (!this.multiple) { this.files = []; this.selected.clear(); }
@@ -559,7 +596,7 @@ class FileDropZone {
     this.render();
   }
 
-  removeFile(p) {
+  removeFile(p: string) {
     this.files = this.files.filter((f) => f !== p);
     this.selected.delete(p);
     this.render();
@@ -577,14 +614,14 @@ class FileDropZone {
     this.render();
   }
 
-  moveFile(fromIndex, toIndex) {
+  moveFile(fromIndex: number, toIndex: number) {
     if (toIndex < 0 || toIndex >= this.files.length) return;
     const [item] = this.files.splice(fromIndex, 1);
     this.files.splice(toIndex, 0, item);
     this.render();
   }
 
-  toggleAll(checked) {
+  toggleAll(checked: boolean) {
     if (checked) {
       this.files.forEach(f => this.selected.add(f));
     } else {
@@ -612,7 +649,7 @@ class FileDropZone {
       </div>
     `;
 
-    toolbar.querySelector(".select-all").addEventListener("change", (e) => this.toggleAll(e.target.checked));
+    toolbar.querySelector(".select-all").addEventListener("change", (e: any) => this.toggleAll(e.target.checked));
     toolbar.querySelector(".btn-delete-sel").addEventListener("click", () => this.deleteSelected());
     toolbar.querySelector(".btn-clear-all").addEventListener("click", () => this.clear());
 
@@ -630,13 +667,13 @@ class FileDropZone {
     this.list.appendChild(container);
   }
 
-  _getCheckboxHTML(p) {
+  _getCheckboxHTML(p: string) {
     const isChecked = this.selected.has(p) ? "checked" : "";
     return `<input type="checkbox" class="file-chip-checkbox" data-path="${encodeURIComponent(p)}" ${isChecked}>`;
   }
 
-  _bindCheckboxEvent(chip) {
-    chip.querySelector(".file-chip-checkbox").addEventListener("change", (e) => {
+  _bindCheckboxEvent(chip: HTMLElement) {
+    chip.querySelector(".file-chip-checkbox").addEventListener("change", (e: any) => {
       const path = decodeURIComponent(e.target.dataset.path);
       if (e.target.checked) this.selected.add(path);
       else this.selected.delete(path);
@@ -644,7 +681,7 @@ class FileDropZone {
     });
   }
 
-  _renderChip(p) {
+  _renderChip(p: string) {
     const name = p.split(/[\\/]/).pop();
     const chip = document.createElement("div");
     chip.className = "file-chip";
@@ -655,13 +692,13 @@ class FileDropZone {
       <span class="file-chip-remove" data-path="${encodeURIComponent(p)}">&times;</span>`;
     
     this._bindCheckboxEvent(chip);
-    chip.querySelector(".file-chip-remove").addEventListener("click", (ev) => {
+    chip.querySelector(".file-chip-remove").addEventListener("click", (ev: any) => {
       this.removeFile(decodeURIComponent(ev.target.dataset.path));
     });
     return chip;
   }
 
-  _renderReorderableChip(p, index) {
+  _renderReorderableChip(p: string, index: number) {
     const name = p.split(/[\\/]/).pop();
     const chip = document.createElement("div");
     chip.className = "file-chip reorderable";
@@ -684,17 +721,17 @@ class FileDropZone {
       <span class="file-chip-remove" data-path="${encodeURIComponent(p)}">&times;</span>`;
 
     this._bindCheckboxEvent(chip);
-    chip.querySelector(".file-chip-remove").addEventListener("click", (ev) => this.removeFile(decodeURIComponent(ev.target.dataset.path)));
+    chip.querySelector(".file-chip-remove").addEventListener("click", (ev: any) => this.removeFile(decodeURIComponent(ev.target.dataset.path)));
     chip.querySelectorAll(".file-chip-arrow").forEach((el) => {
-      el.addEventListener("click", (ev) => {
+      el.addEventListener("click", (ev: any) => {
         ev.stopPropagation();
         this.moveFile(index, ev.currentTarget.dataset.dir === "up" ? index - 1 : index + 1);
       });
     });
 
-    chip.addEventListener("dragstart", (ev) => { this._dragFromIndex = index; chip.classList.add("dragging"); ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(index)); });
+    chip.addEventListener("dragstart", (ev: any) => { this._dragFromIndex = index; chip.classList.add("dragging"); ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(index)); });
     chip.addEventListener("dragend", () => { chip.classList.remove("dragging"); this.list.querySelectorAll(".file-chip").forEach(c => c.classList.remove("drag-over-top", "drag-over-bottom")); });
-    chip.addEventListener("dragover", (ev) => {
+    chip.addEventListener("dragover", (ev: any) => {
       ev.preventDefault();
       if (this._dragFromIndex === null || this._dragFromIndex === index) return;
       const rect = chip.getBoundingClientRect();
@@ -702,7 +739,7 @@ class FileDropZone {
       chip.classList.toggle("drag-over-bottom", !(ev.clientY - rect.top < rect.height / 2));
     });
     chip.addEventListener("dragleave", () => chip.classList.remove("drag-over-top", "drag-over-bottom"));
-    chip.addEventListener("drop", (ev) => {
+    chip.addEventListener("drop", (ev: any) => {
       ev.preventDefault(); ev.stopPropagation();
       if (this._dragFromIndex === null || this._dragFromIndex === index) return;
       const rect = chip.getBoundingClientRect();
@@ -717,7 +754,7 @@ class FileDropZone {
 }
 
 async function initTauriDragDrop() {
-  await getCurrentWebview().onDragDropEvent((event) => {
+  await getCurrentWebview().onDragDropEvent((event: any) => {
     if (event.payload.type === "hover") {
       const { position } = event.payload;
       const targetElement = document.elementFromPoint(position.x, position.y);
@@ -748,7 +785,7 @@ async function initTauriDragDrop() {
 // ---------------------------------------------------------------------
 // Console & Tool Status Builders
 // ---------------------------------------------------------------------
-function logLine(bodyId, message, cls = "") {
+function logLine(bodyId: string, message: string, cls: string = "") {
   const body = document.getElementById(bodyId);
   if(!body) return;
   const line = document.createElement("div");
@@ -758,14 +795,14 @@ function logLine(bodyId, message, cls = "") {
   body.scrollTop = body.scrollHeight;
 }
 
-function setStatus(dotId, textId, state, label) {
+function setStatus(dotId: string, textId: string, state: string, label: string) {
   const dot = document.getElementById(dotId);
   const text = document.getElementById(textId);
   if(dot) dot.className = "console-dot " + state;
   if(text) text.textContent = label;
 }
 
-function showResult(bannerId, ok, message, outputPath) {
+function showResult(bannerId: string, ok: boolean, message: string, outputPath: string | null) {
   const el = document.getElementById(bannerId);
   if(!el) return;
   el.className = "result-banner visible " + (ok ? "ok" : "error");
@@ -797,7 +834,7 @@ const TOOLS = [
 
 function activeTool() { return TOOLS.find((t) => document.getElementById(t.btn)?.disabled) || null; }
 
-function prepareJobUI(prefix) {
+function prepareJobUI(prefix: string) {
   document.getElementById(`${prefix}-console`).classList.add("visible");
   document.getElementById(`${prefix}-result`).classList.remove("visible");
   document.getElementById(`${prefix}-log`).innerHTML = "";
@@ -852,14 +889,14 @@ listen('job-done', (event: any) => {
 
 // Converter
 const convZone = new FileDropZone({ zoneId: "conv-dropzone", listId: "conv-file-list", fileTypes: ["Convertible Files (*.csv;*.xlsx;*.xls;*.txt)", "All files (*.*)"] });
-document.getElementById("conv-input-type").addEventListener("change", (e) => {
+document.getElementById("conv-input-type").addEventListener("change", (e: any) => {
   document.getElementById("conv-type-hint").textContent = { csv: ".csv", xlsx: ".xlsx", txt: ".txt" }[e.target.value] + " files";
   convZone.clear();
 });
 document.getElementById("conv-run-btn").addEventListener("click", async () => {
-  const inputType = document.getElementById("conv-input-type").value;
-  const outputType = document.getElementById("conv-output-type").value;
-  const outputFolder = document.getElementById("conv-output-folder").value.trim();
+  const inputType = (document.getElementById("conv-input-type") as HTMLInputElement).value;
+  const outputType = (document.getElementById("conv-output-type") as HTMLInputElement).value;
+  const outputFolder = (document.getElementById("conv-output-folder") as HTMLInputElement).value.trim();
 
   // MANTIKSAL HATA DÜZELTİLDİ: Giriş ve çıkış formatı aynı olamaz
   if (inputType === outputType) return toast("Girdi ve Çıktı formatları aynı olamaz.");
@@ -872,12 +909,12 @@ document.getElementById("conv-run-btn").addEventListener("click", async () => {
 
 // TSV
 const tsvZone = new FileDropZone({ zoneId: "tsv-dropzone", listId: "tsv-file-list", fileTypes: ["TSV/Text Files (*.tsv;*.txt)", "All files (*.*)"] });
-document.getElementById("tsv-run-btn").addEventListener("click", async () => {
-  const outputFolder = document.getElementById("tsv-output-folder").value.trim();
+(document.getElementById("tsv-run-btn") as HTMLButtonElement).addEventListener("click", async () => {
+  const outputFolder = (document.getElementById("tsv-output-folder") as HTMLInputElement).value.trim();
   if (!outputFolder) return toast("Pick a destination folder first.");
   if (!tsvZone.files.length) return toast("Drop at least one file to convert.");
   prepareJobUI("tsv");
-  await invoke('run_tsv', { files: tsvZone.files, outputFolder, saveName: document.getElementById("tsv-save-name").value.trim() || "Converted_File" });
+  await invoke('run_tsv', { files: tsvZone.files, outputFolder, saveName: (document.getElementById("tsv-save-name") as HTMLInputElement).value.trim() || "Converted_File" });
 });
 
 const fbaManager = {
@@ -981,7 +1018,7 @@ const fbaManager = {
     try {
       const msg = await invoke("inv_reset_data");
       console.log(msg);
-      document.getElementById("fba-btn-undo").style.display = "inline-block";
+      (document.getElementById("fba-btn-undo") as HTMLButtonElement).style.display = "inline-block";
       this.reloadData();
     } catch (e) {
       console.error("Sıfırlama Hatası: " + e);
@@ -992,7 +1029,7 @@ const fbaManager = {
     try {
       const msg = await invoke("inv_undo_reset");
       console.log(msg); // Tauri'den dönen kurtarma mesajı
-      document.getElementById("fba-btn-undo").style.display = "none";
+      (document.getElementById("fba-btn-undo") as HTMLButtonElement).style.display = "none";
       this.reloadData();
     } catch (e) {
       console.error("Kurtarma Hatası: " + e);
@@ -1071,7 +1108,7 @@ const fbaManager = {
     }).join("");
 
     document.querySelectorAll(".fba-note-input").forEach(inp => {
-      inp.addEventListener("change", async (e) => {
+      inp.addEventListener("change", async (e: any) => {
         const { id, sku, exp } = e.target.dataset;
         await invoke("inv_update_note", { shipmentId: id, sku: sku, expDateUsa: exp, note: e.target.value });
         toast("Not güncellendi.");
@@ -1243,7 +1280,7 @@ function renderCostUpdaterUI(dataObj, isV2, containerId) {
 
   // -- Event Listeners (Doğrudan dataObj güncellenir) --
   container.querySelectorAll(".cu-wh-input").forEach(input => {
-    input.addEventListener("change", (e) => {
+    input.addEventListener("change", (e: any) => {
       const wh = e.target.dataset.wh;
       const prop = e.target.dataset.prop;
       if (isV2) {
@@ -1255,7 +1292,7 @@ function renderCostUpdaterUI(dataObj, isV2, containerId) {
   });
 
   container.querySelectorAll(".tag-input").forEach(input => {
-    input.addEventListener("keydown", (e) => {
+    input.addEventListener("keydown", (e: any) => {
       if (e.key === "Enter") {
         e.preventDefault();
         const val = e.target.value.trim();
@@ -1269,7 +1306,7 @@ function renderCostUpdaterUI(dataObj, isV2, containerId) {
   });
 
   container.querySelectorAll(".file-chip-remove").forEach(btn => {
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", (e: any) => {
       const col = e.currentTarget.dataset.col;
       const val = e.currentTarget.dataset.val;
       dataObj.columns[col] = dataObj.columns[col].filter(v => v !== val);
@@ -1278,7 +1315,7 @@ function renderCostUpdaterUI(dataObj, isV2, containerId) {
   });
 
   container.querySelectorAll(".btn-delete-wh").forEach(btn => {
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", (e: any) => {
       const wh = e.currentTarget.dataset.wh;
       if (e.currentTarget.dataset.confirm === "1") {
         delete dataObj.warehouses[wh];
@@ -1324,7 +1361,7 @@ function renderCostUpdaterUI(dataObj, isV2, containerId) {
         }
       }
     });
-    addWhInput.addEventListener("keydown", (e) => {
+    addWhInput.addEventListener("keydown", (e: any) => {
         if (e.key === "Enter") addWhBtn.click();
     });
   }
@@ -1351,7 +1388,7 @@ function renderCostUpdaterUI(dataObj, isV2, containerId) {
 
 document.getElementById("cu-version-toggle")?.addEventListener("change", loadCostUpdaterSettings);
 
-document.getElementById("cu-run-btn").addEventListener("click", async () => {
+(document.getElementById("cu-run-btn") as HTMLButtonElement).addEventListener("click", async () => {
   const outputFolder = document.getElementById("cu-output-folder").value.trim();
   const isV2 = document.getElementById("cu-version-toggle").checked;
   
@@ -1398,11 +1435,11 @@ function updateRestockCardVisibility() {
   document.getElementById("rs-export-card").style.display = exportOn ? "" : "none";
   document.getElementById("rs-restock-card").style.display = restockOn ? "" : "none";
 }
-document.getElementById("rs-export-toggle").addEventListener("change", (e) => {
+document.getElementById("rs-export-toggle").addEventListener("change", (e: any) => {
   if (e.target.checked === false && document.getElementById("rs-restock-toggle").checked) document.getElementById("rs-restock-toggle").checked = false;
   updateRestockCardVisibility();
 });
-document.getElementById("rs-restock-toggle").addEventListener("change", (e) => {
+document.getElementById("rs-restock-toggle").addEventListener("change", (e: any) => {
   if (e.target.checked) document.getElementById("rs-export-toggle").checked = true;
   updateRestockCardVisibility();
 });
@@ -1513,7 +1550,7 @@ document.getElementById("sc-run-btn").addEventListener("click", async () => {
 // Invoice Finder
 const ifAllinvoicesZone = new FileDropZone({ zoneId: "if-allinvoices-dropzone", listId: "if-allinvoices-file-list", multiple: false, fileTypes: EXCEL_TYPES });
 const ifSourceZone = new FileDropZone({ zoneId: "if-source-dropzone", listId: "if-source-file-list", multiple: false, fileTypes: EXCEL_TYPES });
-document.getElementById("if-mode-toggle").addEventListener("change", (e) => {
+document.getElementById("if-mode-toggle").addEventListener("change", (e: any) => {
   const isDate = e.target.checked;
   document.getElementById("if-date-mode-card").style.display = isDate ? "" : "none";
   document.getElementById("if-upc-mode-card").style.display = isDate ? "none" : "";
@@ -1524,7 +1561,7 @@ document.getElementById("if-instructions-btn").addEventListener("click", async (
   document.getElementById("if-instructions-body").textContent = await invoke('get_invoice_finder_instructions') || "No instructions found.";
 });
 document.getElementById("if-instructions-close").addEventListener("click", () => document.getElementById("if-instructions-modal").classList.remove("visible"));
-document.getElementById("if-instructions-modal").addEventListener("click", (e) => { if(e.target.id === "if-instructions-modal") e.target.classList.remove("visible"); });
+document.getElementById("if-instructions-modal").addEventListener("click", (e: any) => { if(e.target.id === "if-instructions-modal") e.target.classList.remove("visible"); });
 
 document.getElementById("if-run-btn").addEventListener("click", async () => {
   const outputFolder = document.getElementById("if-output-folder").value.trim();
@@ -1598,7 +1635,7 @@ const updatesView = {
       let downloaded = 0;
       let contentLength = 0;
       
-      await this.update.downloadAndInstall((event) => {
+      await this.update.downloadAndInstall((event: any) => {
         switch (event.event) {
           case 'Started':
             contentLength = event.data.contentLength;
